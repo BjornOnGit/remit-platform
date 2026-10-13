@@ -9,7 +9,9 @@ import (
 
 	"google.golang.org/grpc"
 
+	"remit-platform/ledger/internal/api"
 	"remit-platform/ledger/internal/store"
+	ledgerpb "remit-platform/ledger/proto"
 )
 
 func main() {
@@ -35,6 +37,7 @@ func main() {
 	}
 
 	srv := grpc.NewServer()
+	ledgerpb.RegisterLedgerServer(srv, &api.Server{DB: pool})
 
 	fmt.Println("ready")
 	if err := srv.Serve(lis); err != nil {
