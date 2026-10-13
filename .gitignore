@@ -1,0 +1,33 @@
+# Node
+node_modules/
+dist/
+npm-debug.log*
+
+# Go
+*.exe
+*.test
+*.out
+/bin/
+vendor/
+
+# Docker / env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+certs/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+architecture.md
+tasks.md
