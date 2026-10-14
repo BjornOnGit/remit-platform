@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log"
 	"regexp"
@@ -60,8 +62,15 @@ func (s *Server) Transfer(ctx context.Context, req *ledgerpb.TransferReq) (*ledg
 		return nil, status.Error(codes.InvalidArgument, "currency does not match the source wallet")
 	}
 
-	t, err := store.Transfer(ctx, s.DB, req.GetFromWalletId(), req.GetToWalletId(), req.GetAmount(), req.GetCurrency())
+	sum := sha256.Sum256([]byte(strings.Join([]string{
+		strings.ToLower(req.GetFromWalletId()), strings.ToLower(req.GetToWalletId()),
+		req.GetAmount(), req.GetCurrency(),
+	}, "|")))
+	t, err := store.Transfer(ctx, s.DB, req.GetFromWalletId(), req.GetToWalletId(),
+		req.GetAmount(), req.GetCurrency(), req.GetIdempotencyKey(), hex.EncodeToString(sum[:]))
 	switch {
+	case errors.Is(err, store.ErrIdempotencyConflict):
+		return nil, status.Error(codes.AlreadyExists, err.Error())
 	case errors.Is(err, store.ErrWalletNotFound):
 		return nil, status.Error(codes.NotFound, "wallet not found")
 	case errors.Is(err, store.ErrInsufficientFunds):
@@ -73,7 +82,27 @@ func (s *Server) Transfer(ctx context.Context, req *ledgerpb.TransferReq) (*ledg
 		return nil, status.Error(codes.Internal, "internal error")
 	}
 
-	return &ledgerpb.TransferResp{Transaction: &ledgerpb.TransactionResp{
+	return &ledgerpb.TransferResp{Transaction: transactionResp(t)}, nil
+}
+
+func (s *Server) GetTransaction(ctx context.Context, req *ledgerpb.GetTransactionReq) (*ledgerpb.TransactionResp, error) {
+	if _, err := uuid.Parse(req.GetId()); err != nil {
+		return nil, status.Error(codes.InvalidArgument, "id must be a valid UUID")
+	}
+
+	t, err := store.GetTransaction(ctx, s.DB, req.GetId())
+	if errors.Is(err, store.ErrTransactionNotFound) {
+		return nil, status.Error(codes.NotFound, err.Error())
+	}
+	if err != nil {
+		log.Printf("get transaction: %v", err)
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+	return transactionResp(t), nil
+}
+
+func transactionResp(t store.Transaction) *ledgerpb.TransactionResp {
+	return &ledgerpb.TransactionResp{
 		Id:              t.ID,
 		FromWalletId:    t.FromWalletID,
 		ToWalletId:      t.ToWalletID,
@@ -83,5 +112,5 @@ func (s *Server) Transfer(ctx context.Context, req *ledgerpb.TransferReq) (*ledg
 		ConvertedAmount: t.ConvertedAmount,
 		Status:          t.Status,
 		CreatedAt:       t.CreatedAt.Format(time.RFC3339),
-	}}, nil
+	}
 }

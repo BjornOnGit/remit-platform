@@ -6,11 +6,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var (
-	ErrInsufficientFunds = errors.New("insufficient funds")
+	ErrIdempotencyConflict = errors.New("idempotency key already used with a different request")
+	ErrInsufficientFunds   = errors.New("insufficient funds")
 	ErrCurrencyMismatch  = errors.New("destination wallet currency differs from transfer currency (cross-currency not supported yet)")
 )
 
@@ -27,7 +29,7 @@ type Transaction struct {
 }
 
 // Transfer moves amount between two wallets of the same currency in one DB transaction.
-func Transfer(ctx context.Context, pool *pgxpool.Pool, fromID, toID, amount, currency string) (Transaction, error) {
+func Transfer(ctx context.Context, pool *pgxpool.Pool, fromID, toID, amount, currency, idemKey, reqHash string) (Transaction, error) {
 	fromID, toID = strings.ToLower(fromID), strings.ToLower(toID)
 
 	tx, err := pool.Begin(ctx)
@@ -35,6 +37,24 @@ func Transfer(ctx context.Context, pool *pgxpool.Pool, fromID, toID, amount, cur
 		return Transaction{}, err
 	}
 	defer tx.Rollback(ctx)
+
+	// Serialize requests sharing an idempotency key, then replay if already processed.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, idemKey); err != nil {
+		return Transaction{}, err
+	}
+	var storedHash, storedTxID string
+	err = tx.QueryRow(ctx,
+		`SELECT request_hash, transaction_id::text FROM idempotency_keys WHERE key = $1`,
+		idemKey).Scan(&storedHash, &storedTxID)
+	switch {
+	case err == nil:
+		if storedHash != reqHash {
+			return Transaction{}, ErrIdempotencyConflict
+		}
+		return getTransaction(ctx, tx, storedTxID)
+	case !errors.Is(err, pgx.ErrNoRows):
+		return Transaction{}, err
+	}
 
 	// Lock both wallets ordered by id to avoid deadlocks.
 	rows, err := tx.Query(ctx,
@@ -105,8 +125,41 @@ func Transfer(ctx context.Context, pool *pgxpool.Pool, fromID, toID, amount, cur
 		return Transaction{}, err
 	}
 
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO idempotency_keys (key, request_hash, transaction_id) VALUES ($1, $2, $3)`,
+		idemKey, reqHash, t.ID); err != nil {
+		return Transaction{}, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return Transaction{}, err
 	}
 	return t, nil
+}
+
+var ErrTransactionNotFound = errors.New("transaction not found")
+
+// GetTransaction reads a transaction by id.
+func GetTransaction(ctx context.Context, pool *pgxpool.Pool, id string) (Transaction, error) {
+	t, err := getTransaction(ctx, pool, id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Transaction{}, ErrTransactionNotFound
+	}
+	return t, err
+}
+
+// rowQuerier is satisfied by both *pgxpool.Pool and pgx.Tx.
+type rowQuerier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func getTransaction(ctx context.Context, q rowQuerier, id string) (Transaction, error) {
+	var t Transaction
+	err := q.QueryRow(ctx,
+		`SELECT id::text, from_wallet_id::text, to_wallet_id::text, amount::text,
+		        currency_from, currency_to, converted_amount::text, status, created_at
+		 FROM transactions WHERE id = $1`, id,
+	).Scan(&t.ID, &t.FromWalletID, &t.ToWalletID, &t.Amount,
+		&t.CurrencyFrom, &t.CurrencyTo, &t.ConvertedAmount, &t.Status, &t.CreatedAt)
+	return t, err
 }
