@@ -6,6 +6,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc/codes"
@@ -59,5 +60,28 @@ func (s *Server) Transfer(ctx context.Context, req *ledgerpb.TransferReq) (*ledg
 		return nil, status.Error(codes.InvalidArgument, "currency does not match the source wallet")
 	}
 
-	return nil, status.Error(codes.Unimplemented, "transfer execution not implemented yet")
+	t, err := store.Transfer(ctx, s.DB, req.GetFromWalletId(), req.GetToWalletId(), req.GetAmount(), req.GetCurrency())
+	switch {
+	case errors.Is(err, store.ErrWalletNotFound):
+		return nil, status.Error(codes.NotFound, "wallet not found")
+	case errors.Is(err, store.ErrInsufficientFunds):
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, store.ErrCurrencyMismatch):
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
+	case err != nil:
+		log.Printf("transfer: %v", err)
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+
+	return &ledgerpb.TransferResp{Transaction: &ledgerpb.TransactionResp{
+		Id:              t.ID,
+		FromWalletId:    t.FromWalletID,
+		ToWalletId:      t.ToWalletID,
+		Amount:          t.Amount,
+		CurrencyFrom:    t.CurrencyFrom,
+		CurrencyTo:      t.CurrencyTo,
+		ConvertedAmount: t.ConvertedAmount,
+		Status:          t.Status,
+		CreatedAt:       t.CreatedAt.Format(time.RFC3339),
+	}}, nil
 }
