@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -174,6 +175,28 @@ func Transfer(ctx context.Context, pool *pgxpool.Pool, fromID, toID, amount, cur
 	if err != nil {
 		return Transaction{}, err
 	}
+
+	// Transactional outbox: the event commits (or rolls back) together with the transfer.
+	payload, err := json.Marshal(map[string]string{
+		"transaction_id":   t.ID,
+		"from_wallet_id":   t.FromWalletID,
+		"to_wallet_id":     t.ToWalletID,
+		"amount":           t.Amount,
+		"currency_from":    t.CurrencyFrom,
+		"currency_to":      t.CurrencyTo,
+		"converted_amount": t.ConvertedAmount,
+		"status":           t.Status,
+		"created_at":       t.CreatedAt.UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return Transaction{}, err
+	}
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO outbox_events (event_type, payload) VALUES ('transaction.posted', $1::text::jsonb)`,
+		string(payload)); err != nil {
+		return Transaction{}, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return Transaction{}, err
 	}
