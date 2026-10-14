@@ -1,5 +1,7 @@
 import Fastify from "fastify";
 import { httpStatusFor, isGrpcError } from "./grpc/errors";
+import { FxError } from "./services/fxClient";
+import { fxRoutes } from "./routes/fx";
 import { transactionRoutes } from "./routes/transactions";
 import { transferRoutes } from "./routes/transfers";
 import { walletRoutes } from "./routes/wallets";
@@ -15,6 +17,9 @@ export function buildApp() {
         code === 503 ? "ledger unavailable" : code === 500 ? "internal error" : err.details;
       return reply.status(code).send({ error: message });
     }
+    if (err instanceof FxError) {
+      return reply.status(err.statusCode).send({ error: err.message });
+    }
     return reply.send(err);
   });
 
@@ -22,6 +27,7 @@ export function buildApp() {
   app.register(walletRoutes, { prefix: "/v1" });
   app.register(transferRoutes, { prefix: "/v1" });
   app.register(transactionRoutes, { prefix: "/v1" });
+  app.register(fxRoutes, { prefix: "/v1" });
 
   return app;
 }
