@@ -51,3 +51,32 @@ export const createWallet = (owner_id: string, currency_code: string) =>
     owner_id,
     currency_code,
   });
+
+export interface Transaction {
+  id: string;
+  from_wallet_id: string;
+  to_wallet_id: string;
+  amount: string;
+  currency_from: string;
+  currency_to: string;
+  converted_amount: string;
+  fx_rate: string;
+  fx_source: string;
+  fx_timestamp: string;
+  status: string;
+  created_at: string;
+}
+
+export interface TransferInput {
+  idempotency_key: string;
+  from_wallet_id: string;
+  to_wallet_id: string;
+  amount: string;
+  currency: string;
+  metadata?: Record<string, string>;
+}
+
+export const transfer = async (input: TransferInput): Promise<Transaction> => {
+  const res = await unary<TransferInput, { transaction: Transaction }>("Transfer", input);
+  return res.transaction;
+};

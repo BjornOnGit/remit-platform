@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import { httpStatusFor, isGrpcError } from "./grpc/errors";
+import { transferRoutes } from "./routes/transfers";
 import { walletRoutes } from "./routes/wallets";
 
 export function buildApp() {
@@ -18,6 +19,7 @@ export function buildApp() {
 
   app.get("/health", async () => ({ status: "ok" }));
   app.register(walletRoutes, { prefix: "/v1" });
+  app.register(transferRoutes, { prefix: "/v1" });
 
   return app;
 }
