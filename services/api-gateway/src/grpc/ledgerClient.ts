@@ -80,3 +80,6 @@ export const transfer = async (input: TransferInput): Promise<Transaction> => {
   const res = await unary<TransferInput, { transaction: Transaction }>("Transfer", input);
   return res.transaction;
 };
+
+export const getTransaction = (id: string) =>
+  unary<{ id: string }, Transaction>("GetTransaction", { id });
