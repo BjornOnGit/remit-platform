@@ -63,12 +63,34 @@ func (s *Server) Transfer(ctx context.Context, req *ledgerpb.TransferReq) (*ledg
 		return nil, status.Error(codes.InvalidArgument, "currency does not match the source wallet")
 	}
 
+	// Wallet currencies never change, so the rate is fetched before opening the DB transaction.
+	to, err := store.GetWallet(ctx, s.DB, req.GetToWalletId())
+	if errors.Is(err, store.ErrWalletNotFound) {
+		return nil, status.Error(codes.NotFound, "to wallet not found")
+	}
+	if err != nil {
+		log.Printf("transfer: get destination wallet: %v", err)
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+	var quote *fx.Quote
+	if to.CurrencyCode != from.CurrencyCode {
+		q, err := s.FX.Rate(ctx, from.CurrencyCode, to.CurrencyCode)
+		switch {
+		case errors.Is(err, fx.ErrRateUnavailable), errors.Is(err, fx.ErrRateStale):
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		case err != nil:
+			log.Printf("transfer: fx rate: %v", err)
+			return nil, status.Error(codes.Unavailable, fx.ErrRateServiceDown.Error())
+		}
+		quote = &q
+	}
+
 	sum := sha256.Sum256([]byte(strings.Join([]string{
 		strings.ToLower(req.GetFromWalletId()), strings.ToLower(req.GetToWalletId()),
 		req.GetAmount(), req.GetCurrency(),
 	}, "|")))
 	t, err := store.Transfer(ctx, s.DB, req.GetFromWalletId(), req.GetToWalletId(),
-		req.GetAmount(), req.GetCurrency(), req.GetIdempotencyKey(), hex.EncodeToString(sum[:]))
+		req.GetAmount(), req.GetCurrency(), req.GetIdempotencyKey(), hex.EncodeToString(sum[:]), quote)
 	switch {
 	case errors.Is(err, store.ErrIdempotencyConflict):
 		return nil, status.Error(codes.AlreadyExists, err.Error())
@@ -78,8 +100,6 @@ func (s *Server) Transfer(ctx context.Context, req *ledgerpb.TransferReq) (*ledg
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, store.ErrCurrencyMismatch), errors.Is(err, store.ErrAmountTooSmall):
 		return nil, status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, fx.ErrRateUnavailable):
-		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	case err != nil:
 		log.Printf("transfer: %v", err)
 		return nil, status.Error(codes.Internal, "internal error")

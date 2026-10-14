@@ -14,7 +14,13 @@ export function buildApp() {
       const code = httpStatusFor(err.code);
       if (code >= 500) app.log.error(err);
       const message =
-        code === 503 ? "ledger unavailable" : code === 500 ? "internal error" : err.details;
+        code === 503
+          ? err.details === "fx service unavailable"
+            ? err.details
+            : "ledger unavailable"
+          : code === 500
+            ? "internal error"
+            : err.details;
       return reply.status(code).send({ error: message });
     }
     if (err instanceof FxError) {

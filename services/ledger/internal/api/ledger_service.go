@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	ledgerpb "remit-platform/ledger/proto"
+	"remit-platform/ledger/internal/fx"
 	"remit-platform/ledger/internal/store"
 )
 
@@ -21,6 +22,7 @@ var currencyRe = regexp.MustCompile(`^[A-Z]{3}$`)
 type Server struct {
 	ledgerpb.UnimplementedLedgerServer
 	DB *pgxpool.Pool
+	FX fx.RateSource
 }
 
 func (s *Server) CreateWallet(ctx context.Context, req *ledgerpb.CreateWalletReq) (*ledgerpb.WalletResp, error) {

@@ -45,7 +45,8 @@ type entry struct {
 
 // Transfer moves money between two wallets in one DB transaction.
 // Same-currency: 2 ledger entries. Cross-currency: 4 entries via the system FX wallets.
-func Transfer(ctx context.Context, pool *pgxpool.Pool, fromID, toID, amount, currency, idemKey, reqHash string) (Transaction, error) {
+// quote is required when the two wallets use different currencies.
+func Transfer(ctx context.Context, pool *pgxpool.Pool, fromID, toID, amount, currency, idemKey, reqHash string, quote *fx.Quote) (Transaction, error) {
 	fromID, toID = strings.ToLower(fromID), strings.ToLower(toID)
 
 	tx, err := pool.Begin(ctx)
@@ -101,11 +102,10 @@ func Transfer(ctx context.Context, pool *pgxpool.Pool, fromID, toID, amount, cur
 	if toCur == fromCur {
 		entries = append(entries, entry{toID, amt, toCur, "transfer_credit"})
 	} else {
-		r, err := fx.Rate(fromCur, toCur)
-		if err != nil {
-			return Transaction{}, err
+		if quote == nil {
+			return Transaction{}, errors.New("fx quote required for cross-currency transfer")
 		}
-		converted = amt.Mul(r).RoundBank(2)
+		converted = amt.Mul(quote.Rate).RoundBank(2)
 		if !converted.IsPositive() {
 			return Transaction{}, ErrAmountTooSmall
 		}
@@ -128,9 +128,9 @@ func Transfer(ctx context.Context, pool *pgxpool.Pool, fromID, toID, amount, cur
 			entry{toID, converted, toCur, "transfer_credit"},
 		)
 
-		now := time.Now().UTC()
-		fxTime = &now
-		rate, source = r.String(), fx.StubSource
+		ts := quote.FetchedAt.UTC()
+		fxTime = &ts
+		rate, source = quote.Rate.String(), quote.Source
 		corridor = corridorOf(fromCur, toCur)
 	}
 
