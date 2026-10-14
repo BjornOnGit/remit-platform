@@ -4,6 +4,7 @@ import { buildApp } from "./app";
 import { loadRates } from "./fetcher";
 import { staticProvider } from "./providers/static";
 import { createRateService } from "./rates";
+import { startRefresh } from "./refresh";
 
 async function main() {
   const dbUrl = process.env.DATABASE_URL;
@@ -20,8 +21,13 @@ async function main() {
 
   const app = buildApp(createRateService(pool, redis));
 
-  const count = await loadRates(pool, staticProvider());
+  const refreshMinutes = Number(process.env.FX_REFRESH_MINUTES ?? 5);
+  if (!(refreshMinutes > 0)) throw new Error("FX_REFRESH_MINUTES must be a positive number");
+
+  const provider = staticProvider();
+  const count = await loadRates(pool, provider);
   app.log.info(`loaded ${count} fx rates`);
+  startRefresh(() => loadRates(pool, provider), refreshMinutes * 60_000, app.log);
 
   await app.listen({ port: Number(process.env.PORT ?? 3001), host: "0.0.0.0" });
 }
