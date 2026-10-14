@@ -1,9 +1,23 @@
 import Fastify from "fastify";
+import { httpStatusFor, isGrpcError } from "./grpc/errors";
+import { walletRoutes } from "./routes/wallets";
 
 export function buildApp() {
   const app = Fastify({ logger: true });
 
+  app.setErrorHandler((err, _req, reply) => {
+    if (isGrpcError(err)) {
+      const code = httpStatusFor(err.code);
+      if (code >= 500) app.log.error(err);
+      const message =
+        code === 503 ? "ledger unavailable" : code === 500 ? "internal error" : err.details;
+      return reply.status(code).send({ error: message });
+    }
+    return reply.send(err);
+  });
+
   app.get("/health", async () => ({ status: "ok" }));
+  app.register(walletRoutes, { prefix: "/v1" });
 
   return app;
 }

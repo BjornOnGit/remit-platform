@@ -45,3 +45,9 @@ export interface Wallet {
 
 export const getWallet = (id: string) =>
   unary<{ id: string }, Wallet>("GetWallet", { id });
+
+export const createWallet = (owner_id: string, currency_code: string) =>
+  unary<{ owner_id: string; currency_code: string }, Wallet>("CreateWallet", {
+    owner_id,
+    currency_code,
+  });
