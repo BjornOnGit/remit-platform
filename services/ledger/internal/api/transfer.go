@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	"remit-platform/ledger/internal/fx"
 	"remit-platform/ledger/internal/store"
 	ledgerpb "remit-platform/ledger/proto"
 )
@@ -75,7 +76,9 @@ func (s *Server) Transfer(ctx context.Context, req *ledgerpb.TransferReq) (*ledg
 		return nil, status.Error(codes.NotFound, "wallet not found")
 	case errors.Is(err, store.ErrInsufficientFunds):
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, store.ErrCurrencyMismatch):
+	case errors.Is(err, store.ErrCurrencyMismatch), errors.Is(err, store.ErrAmountTooSmall):
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, fx.ErrRateUnavailable):
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	case err != nil:
 		log.Printf("transfer: %v", err)
@@ -110,6 +113,9 @@ func transactionResp(t store.Transaction) *ledgerpb.TransactionResp {
 		CurrencyFrom:    t.CurrencyFrom,
 		CurrencyTo:      t.CurrencyTo,
 		ConvertedAmount: t.ConvertedAmount,
+		FxRate:          t.FxRate,
+		FxSource:        t.FxSource,
+		FxTimestamp:     t.FxTimestamp,
 		Status:          t.Status,
 		CreatedAt:       t.CreatedAt.Format(time.RFC3339),
 	}

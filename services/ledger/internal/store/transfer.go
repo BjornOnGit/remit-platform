@@ -8,12 +8,17 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
+
+	"remit-platform/ledger/internal/fx"
 )
 
 var (
 	ErrIdempotencyConflict = errors.New("idempotency key already used with a different request")
 	ErrInsufficientFunds   = errors.New("insufficient funds")
-	ErrCurrencyMismatch  = errors.New("destination wallet currency differs from transfer currency (cross-currency not supported yet)")
+	ErrCurrencyMismatch    = errors.New("transfer currency must match the source wallet currency")
+	ErrAmountTooSmall      = errors.New("amount is too small after conversion")
+	ErrTransactionNotFound = errors.New("transaction not found")
 )
 
 type Transaction struct {
@@ -24,11 +29,22 @@ type Transaction struct {
 	CurrencyFrom    string
 	CurrencyTo      string
 	ConvertedAmount string
+	FxRate          string
+	FxSource        string
+	FxTimestamp     string
 	Status          string
 	CreatedAt       time.Time
 }
 
-// Transfer moves amount between two wallets of the same currency in one DB transaction.
+type entry struct {
+	walletID string
+	amount   decimal.Decimal // negative = debit, positive = credit
+	currency string
+	kind     string
+}
+
+// Transfer moves money between two wallets in one DB transaction.
+// Same-currency: 2 ledger entries. Cross-currency: 4 entries via the system FX wallets.
 func Transfer(ctx context.Context, pool *pgxpool.Pool, fromID, toID, amount, currency, idemKey, reqHash string) (Transaction, error) {
 	fromID, toID = strings.ToLower(fromID), strings.ToLower(toID)
 
@@ -56,88 +72,158 @@ func Transfer(ctx context.Context, pool *pgxpool.Pool, fromID, toID, amount, cur
 		return Transaction{}, err
 	}
 
-	// Lock both wallets ordered by id to avoid deadlocks.
-	rows, err := tx.Query(ctx,
-		`SELECT id::text, currency_code FROM wallets
-		 WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE`,
+	// Lock both user wallets ordered by id to avoid deadlocks.
+	currencies, err := lockWallets(ctx, tx,
+		`SELECT id::text, currency_code FROM wallets WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE`,
 		[]string{fromID, toID})
 	if err != nil {
 		return Transaction{}, err
 	}
-	currencies := map[string]string{}
-	for rows.Next() {
-		var id, cur string
-		if err := rows.Scan(&id, &cur); err != nil {
-			rows.Close()
-			return Transaction{}, err
-		}
-		currencies[id] = cur
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return Transaction{}, err
-	}
-
 	fromCur, okFrom := currencies[fromID]
 	toCur, okTo := currencies[toID]
 	if !okFrom || !okTo {
 		return Transaction{}, ErrWalletNotFound
 	}
-	if fromCur != currency || toCur != currency {
+	if fromCur != currency {
 		return Transaction{}, ErrCurrencyMismatch
 	}
 
-	tag, err := tx.Exec(ctx,
-		`UPDATE wallets SET balance = balance - $2::text::numeric
-		 WHERE id = $1 AND (is_system OR balance >= $2::text::numeric)`,
-		fromID, amount)
+	amt, err := decimal.NewFromString(amount)
 	if err != nil {
 		return Transaction{}, err
 	}
-	if tag.RowsAffected() == 0 {
-		return Transaction{}, ErrInsufficientFunds
+
+	entries := []entry{{fromID, amt.Neg(), fromCur, "transfer_debit"}}
+	converted := amt
+	var rate, source, corridor string
+	var fxTime *time.Time
+
+	if toCur == fromCur {
+		entries = append(entries, entry{toID, amt, toCur, "transfer_credit"})
+	} else {
+		r, err := fx.Rate(fromCur, toCur)
+		if err != nil {
+			return Transaction{}, err
+		}
+		converted = amt.Mul(r).RoundBank(2)
+		if !converted.IsPositive() {
+			return Transaction{}, ErrAmountTooSmall
+		}
+
+		// Lock system FX wallets (always after user wallets, ordered by id).
+		sys, err := lockWallets(ctx, tx,
+			`SELECT currency_code, id::text FROM wallets
+			 WHERE is_system AND currency_code = ANY($1::text[]) ORDER BY id FOR UPDATE`,
+			[]string{fromCur, toCur})
+		if err != nil {
+			return Transaction{}, err
+		}
+		if sys[fromCur] == "" || sys[toCur] == "" {
+			return Transaction{}, errors.New("system FX wallet missing")
+		}
+
+		entries = append(entries,
+			entry{sys[fromCur], amt, fromCur, "fx_credit"},
+			entry{sys[toCur], converted.Neg(), toCur, "fx_debit"},
+			entry{toID, converted, toCur, "transfer_credit"},
+		)
+
+		now := time.Now().UTC()
+		fxTime = &now
+		rate, source = r.String(), fx.StubSource
+		corridor = corridorOf(fromCur, toCur)
 	}
 
-	if _, err := tx.Exec(ctx,
-		`UPDATE wallets SET balance = balance + $2::text::numeric WHERE id = $1`,
-		toID, amount); err != nil {
-		return Transaction{}, err
+	for _, e := range entries {
+		if err := applyBalance(ctx, tx, e); err != nil {
+			return Transaction{}, err
+		}
 	}
 
-	t := Transaction{CurrencyFrom: currency, CurrencyTo: currency}
+	var txID string
 	err = tx.QueryRow(ctx,
 		`INSERT INTO transactions
-		   (from_wallet_id, to_wallet_id, amount, currency_from, currency_to, converted_amount)
-		 VALUES ($1, $2, $3::text::numeric, $4, $4, $3::text::numeric)
-		 RETURNING id::text, from_wallet_id::text, to_wallet_id::text,
-		           amount::text, converted_amount::text, status, created_at`,
-		fromID, toID, amount, currency,
-	).Scan(&t.ID, &t.FromWalletID, &t.ToWalletID, &t.Amount, &t.ConvertedAmount, &t.Status, &t.CreatedAt)
+		   (from_wallet_id, to_wallet_id, amount, currency_from, currency_to, converted_amount,
+		    fx_rate, fx_source, fx_timestamp, corridor)
+		 VALUES ($1, $2, $3::text::numeric, $4, $5, $6::text::numeric,
+		         NULLIF($7::text, '')::numeric, NULLIF($8::text, ''), $9::timestamptz, NULLIF($10::text, ''))
+		 RETURNING id::text`,
+		fromID, toID, amt.String(), fromCur, toCur, converted.String(),
+		rate, source, fxTime, corridor,
+	).Scan(&txID)
 	if err != nil {
 		return Transaction{}, err
 	}
 
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO ledger_entries (wallet_id, transaction_id, amount, currency_code, entry_type)
-		 VALUES ($1, $3, (-($4::text::numeric)), $5, 'transfer_debit'),
-		        ($2, $3, ($4::text::numeric),    $5, 'transfer_credit')`,
-		fromID, toID, t.ID, amount, currency); err != nil {
-		return Transaction{}, err
+	for _, e := range entries {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO ledger_entries (wallet_id, transaction_id, amount, currency_code, entry_type)
+			 VALUES ($1, $2, $3::text::numeric, $4, $5)`,
+			e.walletID, txID, e.amount.String(), e.currency, e.kind); err != nil {
+			return Transaction{}, err
+		}
 	}
 
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO idempotency_keys (key, request_hash, transaction_id) VALUES ($1, $2, $3)`,
-		idemKey, reqHash, t.ID); err != nil {
+		idemKey, reqHash, txID); err != nil {
 		return Transaction{}, err
 	}
 
+	t, err := getTransaction(ctx, tx, txID)
+	if err != nil {
+		return Transaction{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return Transaction{}, err
 	}
 	return t, nil
 }
 
-var ErrTransactionNotFound = errors.New("transaction not found")
+// lockWallets runs a locking query returning (key, value) pairs of text columns.
+func lockWallets(ctx context.Context, tx pgx.Tx, sql string, arg []string) (map[string]string, error) {
+	rows, err := tx.Query(ctx, sql, arg)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var a, b string
+		if err := rows.Scan(&a, &b); err != nil {
+			return nil, err
+		}
+		out[a] = b
+	}
+	return out, rows.Err()
+}
+
+func applyBalance(ctx context.Context, tx pgx.Tx, e entry) error {
+	if e.amount.IsNegative() {
+		tag, err := tx.Exec(ctx,
+			`UPDATE wallets SET balance = balance - $2::text::numeric
+			 WHERE id = $1 AND (is_system OR balance >= $2::text::numeric)`,
+			e.walletID, e.amount.Neg().String())
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrInsufficientFunds
+		}
+		return nil
+	}
+	_, err := tx.Exec(ctx,
+		`UPDATE wallets SET balance = balance + $2::text::numeric WHERE id = $1`,
+		e.walletID, e.amount.String())
+	return err
+}
+
+func corridorOf(a, b string) string {
+	if a > b {
+		a, b = b, a
+	}
+	return a + "-" + b
+}
 
 // GetTransaction reads a transaction by id.
 func GetTransaction(ctx context.Context, pool *pgxpool.Pool, id string) (Transaction, error) {
@@ -157,9 +243,13 @@ func getTransaction(ctx context.Context, q rowQuerier, id string) (Transaction, 
 	var t Transaction
 	err := q.QueryRow(ctx,
 		`SELECT id::text, from_wallet_id::text, to_wallet_id::text, amount::text,
-		        currency_from, currency_to, converted_amount::text, status, created_at
+		        currency_from, currency_to, converted_amount::text,
+		        COALESCE(fx_rate::text, ''), COALESCE(fx_source, ''),
+		        COALESCE(to_char(fx_timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), ''),
+		        status, created_at
 		 FROM transactions WHERE id = $1`, id,
 	).Scan(&t.ID, &t.FromWalletID, &t.ToWalletID, &t.Amount,
-		&t.CurrencyFrom, &t.CurrencyTo, &t.ConvertedAmount, &t.Status, &t.CreatedAt)
+		&t.CurrencyFrom, &t.CurrencyTo, &t.ConvertedAmount,
+		&t.FxRate, &t.FxSource, &t.FxTimestamp, &t.Status, &t.CreatedAt)
 	return t, err
 }
