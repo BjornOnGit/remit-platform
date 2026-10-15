@@ -22,7 +22,7 @@ export async function walletRoutes(app: FastifyInstance) {
     "/wallets",
     { schema: { body: createBody } },
     async (req, reply) => {
-      const wallet = await createWallet(req.body.owner_id, req.body.currency_code);
+      const wallet = await createWallet(req.body.owner_id, req.body.currency_code, req.id);
       return reply.status(201).send(wallet);
     },
   );
@@ -30,6 +30,6 @@ export async function walletRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>(
     "/wallets/:id",
     { schema: { params: idParams } },
-    async (req) => getWallet(req.params.id),
+    async (req) => getWallet(req.params.id, req.id),
   );
 }

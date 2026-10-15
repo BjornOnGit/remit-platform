@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import { httpStatusFor, isGrpcError } from "./grpc/errors";
 import { FxError } from "./services/fxClient";
@@ -7,7 +8,16 @@ import { transferRoutes } from "./routes/transfers";
 import { walletRoutes } from "./routes/wallets";
 
 export function buildApp() {
-  const app = Fastify({ logger: true });
+  const app = Fastify({
+    logger: true,
+    requestIdHeader: "x-correlation-id", // reuse the caller's id if sent
+    requestIdLogLabel: "correlation_id",
+    genReqId: () => randomUUID(),
+  });
+
+  app.addHook("onSend", async (req, reply) => {
+    reply.header("x-correlation-id", req.id);
+  });
 
   app.setErrorHandler((err, _req, reply) => {
     if (isGrpcError(err)) {

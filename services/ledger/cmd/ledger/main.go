@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"os"
 	"time"
@@ -18,6 +18,8 @@ import (
 )
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
+
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		log.Fatal("DATABASE_URL is required")
@@ -75,10 +77,10 @@ func main() {
 		log.Fatalf("listen on %s: %v", addr, err)
 	}
 
-	srv := grpc.NewServer()
+	srv := grpc.NewServer(grpc.UnaryInterceptor(api.LoggingInterceptor))
 	ledgerpb.RegisterLedgerServer(srv, &api.Server{DB: pool, FX: fx.NewClient(fxURL, fxMaxAge)})
 
-	fmt.Println("ready")
+	log.Println("ready")
 	if err := srv.Serve(lis); err != nil {
 		log.Fatalf("serve: %v", err)
 	}

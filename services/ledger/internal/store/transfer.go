@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/shopspring/decimal"
 
+	"remit-platform/ledger/internal/corr"
 	"remit-platform/ledger/internal/fx"
 )
 
@@ -145,12 +146,12 @@ func Transfer(ctx context.Context, pool *pgxpool.Pool, fromID, toID, amount, cur
 	err = tx.QueryRow(ctx,
 		`INSERT INTO transactions
 		   (from_wallet_id, to_wallet_id, amount, currency_from, currency_to, converted_amount,
-		    fx_rate, fx_source, fx_timestamp, corridor)
+		    fx_rate, fx_source, fx_timestamp, corridor, correlation_id)
 		 VALUES ($1, $2, $3::text::numeric, $4, $5, $6::text::numeric,
-		         NULLIF($7::text, '')::numeric, NULLIF($8::text, ''), $9::timestamptz, NULLIF($10::text, ''))
+		         NULLIF($7::text, '')::numeric, NULLIF($8::text, ''), $9::timestamptz, NULLIF($10::text, ''), NULLIF($11::text, ''))
 		 RETURNING id::text`,
 		fromID, toID, amt.String(), fromCur, toCur, converted.String(),
-		rate, source, fxTime, corridor,
+		rate, source, fxTime, corridor, corr.From(ctx),
 	).Scan(&txID)
 	if err != nil {
 		return Transaction{}, err

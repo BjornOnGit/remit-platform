@@ -27,9 +27,12 @@ const client: any = new proto.ledger.v1.Ledger(
   grpc.credentials.createInsecure(),
 );
 
-function unary<Req, Res>(method: string, req: Req): Promise<Res> {
+// The correlation id travels to the ledger as gRPC metadata.
+function unary<Req, Res>(method: string, req: Req, correlationId?: string): Promise<Res> {
+  const metadata = new grpc.Metadata();
+  if (correlationId) metadata.set("x-correlation-id", correlationId);
   return new Promise((resolve, reject) => {
-    client[method](req, (err: grpc.ServiceError | null, res: Res) =>
+    client[method](req, metadata, (err: grpc.ServiceError | null, res: Res) =>
       err ? reject(err) : resolve(res),
     );
   });
@@ -43,14 +46,15 @@ export interface Wallet {
   created_at: string;
 }
 
-export const getWallet = (id: string) =>
-  unary<{ id: string }, Wallet>("GetWallet", { id });
+export const getWallet = (id: string, cid?: string) =>
+  unary<{ id: string }, Wallet>("GetWallet", { id }, cid);
 
-export const createWallet = (owner_id: string, currency_code: string) =>
-  unary<{ owner_id: string; currency_code: string }, Wallet>("CreateWallet", {
-    owner_id,
-    currency_code,
-  });
+export const createWallet = (owner_id: string, currency_code: string, cid?: string) =>
+  unary<{ owner_id: string; currency_code: string }, Wallet>(
+    "CreateWallet",
+    { owner_id, currency_code },
+    cid,
+  );
 
 export interface Transaction {
   id: string;
@@ -76,10 +80,10 @@ export interface TransferInput {
   metadata?: Record<string, string>;
 }
 
-export const transfer = async (input: TransferInput): Promise<Transaction> => {
-  const res = await unary<TransferInput, { transaction: Transaction }>("Transfer", input);
+export const transfer = async (input: TransferInput, cid?: string): Promise<Transaction> => {
+  const res = await unary<TransferInput, { transaction: Transaction }>("Transfer", input, cid);
   return res.transaction;
 };
 
-export const getTransaction = (id: string) =>
-  unary<{ id: string }, Transaction>("GetTransaction", { id });
+export const getTransaction = (id: string, cid?: string) =>
+  unary<{ id: string }, Transaction>("GetTransaction", { id }, cid);

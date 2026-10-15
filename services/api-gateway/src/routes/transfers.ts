@@ -36,10 +36,10 @@ export async function transferRoutes(app: FastifyInstance) {
     "/transfers",
     { schema: { body, headers } },
     async (req, reply) => {
-      const tx = await transfer({
-        ...req.body,
-        idempotency_key: req.headers["idempotency-key"],
-      });
+      const tx = await transfer(
+        { ...req.body, idempotency_key: req.headers["idempotency-key"] },
+        req.id,
+      );
       return reply.status(201).send(tx);
     },
   );

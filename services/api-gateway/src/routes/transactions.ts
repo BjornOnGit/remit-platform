@@ -11,6 +11,6 @@ export async function transactionRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>(
     "/transactions/:id",
     { schema: { params: idParams } },
-    async (req) => getTransaction(req.params.id),
+    async (req) => getTransaction(req.params.id, req.id),
   );
 }
