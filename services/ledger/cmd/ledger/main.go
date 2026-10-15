@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc"
 
 	"remit-platform/ledger/internal/api"
+	"remit-platform/ledger/internal/events"
 	"remit-platform/ledger/internal/fx"
 	"remit-platform/ledger/internal/store"
 	ledgerpb "remit-platform/ledger/proto"
@@ -40,6 +41,29 @@ func main() {
 		fxMaxAge = d
 	}
 	log.Println("connected to database")
+
+	if queue := os.Getenv("SQS_QUEUE_NAME"); queue != "" {
+		sqsClient, err := events.NewSQSClient(context.Background(), os.Getenv("SQS_ENDPOINT"))
+		if err != nil {
+			log.Fatalf("sqs client: %v", err)
+		}
+		queueURL, err := events.QueueURL(context.Background(), sqsClient, queue, os.Getenv("SQS_CREATE_QUEUE") == "true")
+		if err != nil {
+			log.Fatalf("sqs queue: %v", err)
+		}
+		interval := 2 * time.Second
+		if v := os.Getenv("OUTBOX_RELAY_INTERVAL"); v != "" {
+			d, err := time.ParseDuration(v)
+			if err != nil || d <= 0 {
+				log.Fatalf("OUTBOX_RELAY_INTERVAL must be a positive duration like 2s: %q", v)
+			}
+			interval = d
+		}
+		go events.RunRelay(context.Background(), pool, events.NewSQSPublisher(sqsClient, queueURL), interval)
+		log.Printf("outbox relay started (queue %s)", queue)
+	} else {
+		log.Println("SQS_QUEUE_NAME not set: outbox relay disabled")
+	}
 
 	addr := os.Getenv("LEDGER_GRPC_ADDR")
 	if addr == "" {

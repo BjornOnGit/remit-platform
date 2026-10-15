@@ -20,12 +20,11 @@ services:
     ports:
       - "6380:6379"
 
-  localstack:
-    image: localstack/localstack
-    environment:
-      SERVICES: sqs
+  elasticmq:
+    image: softwaremill/elasticmq-native
     ports:
-      - "4566:4566"
+      - "9324:9324"
+      - "9325:9325"
 
 volumes:
   pgdata:
