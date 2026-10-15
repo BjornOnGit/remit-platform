@@ -1,5 +1,6 @@
 import { FastifyInstance } from "fastify";
 import { transfer } from "../grpc/ledgerClient";
+import { transferFailed, transferRequests } from "../metrics";
 
 const body = {
   type: "object",
@@ -32,6 +33,12 @@ interface TransferBody {
 }
 
 export async function transferRoutes(app: FastifyInstance) {
+  // Counts every transfer request, including ones rejected by validation.
+  app.addHook("onResponse", async (_req, reply) => {
+    transferRequests.inc();
+    if (reply.statusCode >= 400) transferFailed.inc({ status: String(reply.statusCode) });
+  });
+
   app.post<{ Body: TransferBody; Headers: { "idempotency-key": string } }>(
     "/transfers",
     { schema: { body, headers } },

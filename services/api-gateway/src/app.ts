@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
 import { httpStatusFor, isGrpcError } from "./grpc/errors";
+import { register } from "./metrics";
 import { FxError } from "./services/fxClient";
 import { fxRoutes } from "./routes/fx";
 import { transactionRoutes } from "./routes/transactions";
@@ -40,6 +41,9 @@ export function buildApp() {
   });
 
   app.get("/health", async () => ({ status: "ok" }));
+  app.get("/metrics", async (_req, reply) =>
+    reply.header("content-type", register.contentType).send(await register.metrics()),
+  );
   app.register(walletRoutes, { prefix: "/v1" });
   app.register(transferRoutes, { prefix: "/v1" });
   app.register(transactionRoutes, { prefix: "/v1" });

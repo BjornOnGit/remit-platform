@@ -5,9 +5,11 @@ import (
 	"log"
 	"log/slog"
 	"net"
+	"net/http"
 	"os"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 
 	"remit-platform/ledger/internal/api"
@@ -66,6 +68,19 @@ func main() {
 	} else {
 		log.Println("SQS_QUEUE_NAME not set: outbox relay disabled")
 	}
+
+	metricsAddr := os.Getenv("LEDGER_METRICS_ADDR")
+	if metricsAddr == "" {
+		metricsAddr = ":9102"
+	}
+	go func() {
+		mux := http.NewServeMux()
+		mux.Handle("/metrics", promhttp.Handler())
+		log.Printf("metrics listening on %s", metricsAddr)
+		if err := http.ListenAndServe(metricsAddr, mux); err != nil {
+			log.Printf("metrics server: %v", err)
+		}
+	}()
 
 	addr := os.Getenv("LEDGER_GRPC_ADDR")
 	if addr == "" {

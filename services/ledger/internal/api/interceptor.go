@@ -11,9 +11,13 @@ import (
 	"google.golang.org/grpc/status"
 
 	"remit-platform/ledger/internal/corr"
+	"remit-platform/ledger/internal/metrics"
 )
 
-const correlationHeader = "x-correlation-id"
+const (
+	correlationHeader = "x-correlation-id"
+	transferMethod    = "/ledger.v1.Ledger/Transfer"
+)
 
 // LoggingInterceptor puts the caller's correlation id (or a new one) into the context
 // and writes one structured log line per request.
@@ -30,6 +34,12 @@ func LoggingInterceptor(ctx context.Context, req any, info *grpc.UnaryServerInfo
 
 	start := time.Now()
 	resp, err := handler(corr.With(ctx, id), req)
+	if info.FullMethod == transferMethod {
+		metrics.TransferRequests.Inc()
+		if err != nil {
+			metrics.TransferFailed.WithLabelValues(status.Code(err).String()).Inc()
+		}
+	}
 	slog.Info("grpc request",
 		"method", info.FullMethod,
 		"correlation_id", id,
