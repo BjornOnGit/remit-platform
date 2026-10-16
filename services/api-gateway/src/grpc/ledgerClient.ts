@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import * as grpc from "@grpc/grpc-js";
 import * as protoLoader from "@grpc/proto-loader";
@@ -20,12 +21,30 @@ const definition = protoLoader.loadSync(PROTO_PATH, {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const proto = grpc.loadPackageDefinition(definition) as any;
 
-// TODO(Task 6.3): switch to mTLS credentials.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const client: any = new proto.ledger.v1.Ledger(
-  LEDGER_ADDR,
-  grpc.credentials.createInsecure(),
+function readEnvFile(name: string): Buffer {
+  const file = process.env[name];
+  if (!file) throw new Error(`${name} is required (run scripts/gen_dev_certs.sh)`);
+  return fs.readFileSync(file);
+}
+
+// mTLS: verify the ledger's certificate and present our own client certificate.
+const credentials = grpc.credentials.createSsl(
+  readEnvFile("GATEWAY_TLS_CA"),
+  readEnvFile("GATEWAY_TLS_KEY"),
+  readEnvFile("GATEWAY_TLS_CERT"),
 );
+
+const Ledger = proto.ledger?.v1?.Ledger;
+if (!Ledger) {
+  throw new Error(
+    `ledger.v1.Ledger service not found in ${PROTO_PATH}; definitions loaded: ${
+      Object.keys(definition).join(", ") || "(none)"
+    }`,
+  );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const client: any = new Ledger(LEDGER_ADDR, credentials);
 
 // The correlation id travels to the ledger as gRPC metadata.
 function unary<Req, Res>(method: string, req: Req, correlationId?: string): Promise<Res> {

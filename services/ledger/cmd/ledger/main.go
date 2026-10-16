@@ -16,6 +16,7 @@ import (
 	"remit-platform/ledger/internal/events"
 	"remit-platform/ledger/internal/fx"
 	"remit-platform/ledger/internal/store"
+	"remit-platform/ledger/internal/tlsconf"
 	ledgerpb "remit-platform/ledger/proto"
 )
 
@@ -92,7 +93,16 @@ func main() {
 		log.Fatalf("listen on %s: %v", addr, err)
 	}
 
-	srv := grpc.NewServer(grpc.UnaryInterceptor(api.LoggingInterceptor))
+	certFile, keyFile, caFile := os.Getenv("LEDGER_TLS_CERT"), os.Getenv("LEDGER_TLS_KEY"), os.Getenv("LEDGER_TLS_CA")
+	if certFile == "" || keyFile == "" || caFile == "" {
+		log.Fatal("LEDGER_TLS_CERT, LEDGER_TLS_KEY and LEDGER_TLS_CA are required (run scripts/gen_dev_certs.sh)")
+	}
+	creds, err := tlsconf.ServerCredentials(certFile, keyFile, caFile)
+	if err != nil {
+		log.Fatalf("load mTLS credentials: %v", err)
+	}
+
+	srv := grpc.NewServer(grpc.Creds(creds), grpc.UnaryInterceptor(api.LoggingInterceptor))
 	ledgerpb.RegisterLedgerServer(srv, &api.Server{DB: pool, FX: fx.NewClient(fxURL, fxMaxAge)})
 
 	log.Println("ready")
