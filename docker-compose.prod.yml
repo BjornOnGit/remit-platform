@@ -1,0 +1,93 @@
+# Production stack (EC2). Config comes from the env file:
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d
+# Images are pulled from ECR: IMAGE_REGISTRY=<account>.dkr.ecr.<region>.amazonaws.com/ (trailing slash).
+# For a local run against local Postgres/ElasticMQ, leave IMAGE_REGISTRY empty (uses remit/<name>:dev).
+
+x-host-gateway: &host-gateway
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  fx-service:
+    <<: *host-gateway
+    image: ${IMAGE_REGISTRY:-}remit/fx-service:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: "3001"
+      DATABASE_URL: ${PROD_DATABASE_URL:?set PROD_DATABASE_URL}
+      REDIS_URL: redis://redis:6379
+      FX_REFRESH_MINUTES: ${FX_REFRESH_MINUTES:-5}
+
+  ledger:
+    <<: *host-gateway
+    image: ${IMAGE_REGISTRY:-}remit/ledger:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    depends_on:
+      fx-service:
+        condition: service_healthy
+    volumes:
+      - ${CERTS_DIR:-./certs}:/certs:ro,z
+    environment:
+      DATABASE_URL: ${PROD_DATABASE_URL:?set PROD_DATABASE_URL}
+      LEDGER_GRPC_ADDR: ":50051"
+      LEDGER_METRICS_ADDR: ":9102"
+      FX_SERVICE_URL: http://fx-service:3001
+      FX_MAX_AGE: ${FX_MAX_AGE:-10m}
+      LEDGER_TLS_CERT: /certs/ledger.crt
+      LEDGER_TLS_KEY: /certs/ledger.key
+      LEDGER_TLS_CA: /certs/ca.crt
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      SQS_QUEUE_NAME: ${SQS_QUEUE_NAME:-remit-events}
+      SQS_ENDPOINT: ${SQS_ENDPOINT:-}
+      SQS_CREATE_QUEUE: ${SQS_CREATE_QUEUE:-false}
+      # Empty on EC2: credentials come from the instance role.
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+
+  api-gateway:
+    image: ${IMAGE_REGISTRY:-}remit/api-gateway:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    depends_on:
+      ledger:
+        condition: service_healthy
+      fx-service:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    volumes:
+      - ${CERTS_DIR:-./certs}:/certs:ro,z
+    environment:
+      PORT: "3000"
+      LEDGER_GRPC_ADDR: ledger:50051
+      FX_SERVICE_URL: http://fx-service:3001
+      GATEWAY_TLS_CA: /certs/ca.crt
+      GATEWAY_TLS_CERT: /certs/gateway.crt
+      GATEWAY_TLS_KEY: /certs/gateway.key
+
+  settlement-worker:
+    <<: *host-gateway
+    image: ${IMAGE_REGISTRY:-}remit/settlement-worker:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${PROD_DATABASE_URL:?set PROD_DATABASE_URL}
+      SETTLEMENT_INTERVAL: ${SETTLEMENT_INTERVAL:-1m}
+
+  reconciliation:
+    <<: *host-gateway
+    image: ${IMAGE_REGISTRY:-}remit/reconciliation:${IMAGE_TAG:-dev}
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${PROD_DATABASE_URL:?set PROD_DATABASE_URL}
+      RECON_INTERVAL: ${RECON_INTERVAL:-24h}

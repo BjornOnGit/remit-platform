@@ -25,4 +25,6 @@ openssl x509 -req -in gateway.csr -CA ca.crt -CAkey ca.key -CAcreateserial \
   -out gateway.crt -days 365 -sha256 -extfile gateway.ext
 
 rm -f ./*.csr ./*.ext ./*.srl
+# Dev only: containers run as different users and must be able to read the mounted keys.
+chmod 644 ./*.key
 echo "certs written to $OUT"
