@@ -27,11 +27,27 @@ jobs:
 
   go:
     runs-on: ubuntu-latest
+    env:
+      TEST_DATABASE_URL: postgres://remit:remit@localhost:5432/remit?sslmode=disable
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: remit
+          POSTGRES_PASSWORD: remit
+          POSTGRES_DB: remit
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U remit -d remit"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          go-version: stable
       - name: Vet and test Go services
         run: |
           found=0
