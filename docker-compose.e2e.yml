@@ -1,0 +1,31 @@
+# Used with docker-compose.prod.yml by scripts/e2e.sh:
+#   docker compose -p remit-e2e --env-file .env.e2e -f docker-compose.prod.yml -f docker-compose.e2e.yml ...
+# Adds throwaway Postgres and ElasticMQ, and builds every image from source.
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: remit
+      POSTGRES_PASSWORD: remit
+      POSTGRES_DB: remit
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U remit -d remit"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  elasticmq:
+    image: softwaremill/elasticmq-native
+
+  fx-service:
+    build: { context: ., dockerfile: services/fx-service/Dockerfile }
+  ledger:
+    build: { context: ., dockerfile: services/ledger/Dockerfile }
+  api-gateway:
+    build: { context: ., dockerfile: services/api-gateway/Dockerfile }
+  settlement-worker:
+    build: { context: ., dockerfile: services/settlement-worker/Dockerfile }
+  reconciliation:
+    build: { context: ., dockerfile: services/reconciliation/Dockerfile }

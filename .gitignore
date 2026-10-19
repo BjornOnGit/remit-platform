@@ -15,6 +15,7 @@ vendor/
 .env.*
 !.env.example
 !.env.prod.example
+!.env.e2e
 *.pem
 *.key
 certs/

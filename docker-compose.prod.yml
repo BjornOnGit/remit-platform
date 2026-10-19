@@ -65,7 +65,7 @@ services:
       fx-service:
         condition: service_healthy
     ports:
-      - "3000:3000"
+      - "${GATEWAY_PORT:-3000}:3000"
     volumes:
       - ${CERTS_DIR:-./certs}:/certs:ro,z
     environment:
