@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
+import { KeyChecker, registerApiKeyAuth } from "./auth";
 import { httpStatusFor, isGrpcError } from "./grpc/errors";
 import { register } from "./metrics";
 import { FxError } from "./services/fxClient";
@@ -8,7 +9,7 @@ import { transactionRoutes } from "./routes/transactions";
 import { transferRoutes } from "./routes/transfers";
 import { walletRoutes } from "./routes/wallets";
 
-export function buildApp() {
+export function buildApp(checkKey: KeyChecker) {
   const app = Fastify({
     logger: true,
     requestIdHeader: "x-correlation-id", // reuse the caller's id if sent
@@ -39,6 +40,8 @@ export function buildApp() {
     }
     return reply.send(err);
   });
+
+  registerApiKeyAuth(app, checkKey); // must come before the routes it protects
 
   app.get("/health", async () => ({ status: "ok" }));
   app.get("/metrics", async (_req, reply) =>

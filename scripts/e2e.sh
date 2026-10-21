@@ -40,14 +40,21 @@ wait_for "postgres is ready" 60 psql "$DB" -c "select 1"
 DATABASE_URL="$DB" bash scripts/run_migrations.sh >/dev/null
 psql "$DB" -v ON_ERROR_STOP=1 -q -f sql/seed/seed.sql
 ok "migrated and seeded"
+API_KEY=$(DATABASE_URL="$DB" bash scripts/create_api_key.sh 2>/dev/null)
+ok "created an API key"
 
 # --- start the services --------------------------------------------------------------------
 $DC up -d --build --wait
 ok "all services healthy"
 
+expect "/health needs no key" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$API/health")"
+expect "request without an API key returns 401" 401 "$(curl -s -o /dev/null -w '%{http_code}' "$API/v1/wallets/$A")"
+expect "request with a wrong API key returns 401" 401 \
+  "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-API-Key: rk_wrong' "$API/v1/wallets/$A")"
+
 post() { # idempotency key, json body -> "<body>\n<status>"
   curl -s -w '\n%{http_code}' -X POST "$API/v1/transfers" \
-    -H 'content-type: application/json' -H "Idempotency-Key: $1" -d "$2"
+    -H 'content-type: application/json' -H "X-API-Key: $API_KEY" -H "Idempotency-Key: $1" -d "$2"
 }
 body_of() { printf '%s' "${1%$'\n'*}"; }
 code_of() { printf '%s' "${1##*$'\n'}"; }
@@ -84,9 +91,9 @@ out=$(post "e2e-missing" "{\"from_wallet_id\":\"$A\",\"to_wallet_id\":\"99999999
 expect "unknown wallet returns 404" 404 "$(code_of "$out")"
 expect "rejected transfers changed nothing" t "$(q "select balance = 990 from wallets where id = '$A'")"
 
-expect "GET transaction returns 200" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$API/v1/transactions/$TX")"
-expect "GET wallet returns 200" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$API/v1/wallets/$A")"
-expect "GET fx returns 200" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$API/v1/fx?from=USD&to=NGN")"
+expect "GET transaction returns 200" 200 "$(curl -s -o /dev/null -w '%{http_code}' -H "X-API-Key: $API_KEY" "$API/v1/transactions/$TX")"
+expect "GET wallet returns 200" 200 "$(curl -s -o /dev/null -w '%{http_code}' -H "X-API-Key: $API_KEY" "$API/v1/wallets/$A")"
+expect "GET fx returns 200" 200 "$(curl -s -o /dev/null -w '%{http_code}' -H "X-API-Key: $API_KEY" "$API/v1/fx?from=USD&to=NGN")"
 
 # --- asynchronous parts: outbox -> SQS, then settlement --------------------------------------------
 outbox_published() { [ "$(q "select count(*) from outbox_events where published_at is not null")" -ge 1 ]; }

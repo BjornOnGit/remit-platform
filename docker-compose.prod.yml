@@ -70,6 +70,7 @@ services:
       - ${CERTS_DIR:-./certs}:/certs:ro,z
     environment:
       PORT: "3000"
+      DATABASE_URL: ${PROD_DATABASE_URL:?set PROD_DATABASE_URL} # read-only: validates API keys
       LEDGER_GRPC_ADDR: ledger:50051
       FX_SERVICE_URL: http://fx-service:3001
       GATEWAY_TLS_CA: /certs/ca.crt
