@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end test: starts the whole stack on a throwaway database, sends real requests
-# through the gateway, and checks the results in Postgres. Needs docker, psql, curl, openssl.
+# through the gateway, and checks the results in Postgres. Needs docker, psql, curl, openssl, python3.
 #   bash scripts/e2e.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -127,6 +127,31 @@ wait_for "outbox event published to the queue" 30 outbox_published
 tx_settled() { [ "$(q "select status from transactions where id = '$TX'")" = settled ]; }
 wait_for "transaction netted and settled by the worker" 60 tx_settled
 expect "settlement is settled" settled "$(q "select s.status from settlements s join transactions t on t.settlement_id = s.id where t.id = '$TX'")"
+
+# --- audit export ---------------------------------------------------------------------------------------
+EXPORT_COLUMNS="entry_id,entry_created_at,transaction_id,transaction_created_at,wallet_id,entry_currency,amount,entry_type,transaction_status,from_wallet_id,to_wallet_id,currency_from,currency_to,transaction_amount,converted_amount,fx_rate,fx_source,fx_timestamp,corridor,settlement_id,correlation_id"
+ENTRY_COUNT=$(q "select count(*) from ledger_entries")
+
+csv=$(DATABASE_URL="$DB" bash scripts/audit_export.sh --from 2000-01-01 --to 2999-12-31 --format csv)
+expect "CSV export has the expected columns" "$EXPORT_COLUMNS" "$(printf '%s\n' "$csv" | head -1)"
+expect "CSV export has one row per ledger entry" "$ENTRY_COUNT" "$(( $(printf '%s\n' "$csv" | wc -l) - 1 ))"
+
+JSON_FILE=$(mktemp)
+DATABASE_URL="$DB" bash scripts/audit_export.sh --from 2000-01-01 --to 2999-12-31 --format json --out "$JSON_FILE" 2>/dev/null
+if python3 - "$JSON_FILE" "$TX" "$ENTRY_COUNT" "$EXPORT_COLUMNS" <<'PY'
+import json, sys
+path, tx, count, columns = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4].split(",")
+rows = json.load(open(path))
+assert len(rows) == count, f"{len(rows)} rows, expected {count}"
+assert all(list(r.keys()) == columns for r in rows), "unexpected columns"
+mine = [r for r in rows if r["transaction_id"] == tx]
+assert len(mine) == 4, f"{len(mine)} entries for the transfer, expected 4"
+assert all(float(r["fx_rate"]) == 1500 and r["fx_source"] == "static" and r["corridor"] == "NGN-USD" for r in mine), "FX details missing"
+assert abs(sum(float(r["amount"]) for r in mine if r["entry_currency"].strip() == "NGN")) < 1e-9, "NGN entries do not net to zero"
+PY
+then ok "JSON export has the expected schema and FX details"; else fail "JSON export failed validation"; fi
+rm -f "$JSON_FILE"
+expect "an empty date range exports only the header" 1 "$(DATABASE_URL="$DB" bash scripts/audit_export.sh --from 2000-01-01 --to 2000-01-02 | wc -l)"
 
 # --- reconciliation ------------------------------------------------------------------------------------
 if $DC run --rm --no-deps reconciliation -once >/dev/null 2>&1; then ok "reconciliation found no mismatches"; else fail "reconciliation reported mismatches"; fi
