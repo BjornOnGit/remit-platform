@@ -5,6 +5,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Values in .env.e2e must win over anything already exported in your shell (for example from
+# `source .env`): docker compose gives shell variables priority over --env-file.
+set -a
+. ./.env.e2e
+set +a
+
 DC="docker compose -p remit-e2e --env-file .env.e2e -f docker-compose.prod.yml -f docker-compose.e2e.yml"
 DB="postgres://remit:remit@localhost:55432/remit?sslmode=disable"
 API="http://localhost:3300"
@@ -14,7 +20,8 @@ B=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb # seeded NGN wallet (0)
 ok() { echo "ok   $*"; }
 fail() {
   echo "FAIL $*" >&2
-  $DC logs --tail 30 ledger api-gateway >&2 || true
+  $DC ps >&2 || true
+  $DC logs --tail 40 ledger api-gateway fx-service >&2 || true
   exit 1
 }
 q() { psql "$DB" -tAc "$1"; }
@@ -44,13 +51,31 @@ API_KEY=$(DATABASE_URL="$DB" bash scripts/create_api_key.sh 2>/dev/null)
 ok "created an API key"
 
 # --- start the services --------------------------------------------------------------------
-$DC up -d --build --wait
+$DC up -d --build --wait || fail "the stack did not become healthy"
 ok "all services healthy"
 
 expect "/health needs no key" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$API/health")"
 expect "request without an API key returns 401" 401 "$(curl -s -o /dev/null -w '%{http_code}' "$API/v1/wallets/$A")"
 expect "request with a wrong API key returns 401" 401 \
   "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-API-Key: rk_wrong' "$API/v1/wallets/$A")"
+
+# Rate limit: 100 requests per minute per key. A second key gets its own counter.
+KEY2=$(DATABASE_URL="$DB" bash scripts/create_api_key.sh 2>/dev/null)
+ALLOWED=0
+LIMITED=0
+for _ in $(seq 110); do
+  c=$(curl -s -o /dev/null -w '%{http_code}' -H "X-API-Key: $KEY2" "$API/v1/wallets/$A")
+  case "$c" in 200) ALLOWED=$((ALLOWED + 1)) ;; 429) LIMITED=$((LIMITED + 1)) ;; esac
+done
+expect "100 requests are allowed in the window" 100 "$ALLOWED"
+expect "the next 10 are rejected with 429" 10 "$LIMITED"
+if curl -s -D - -o /dev/null -H "X-API-Key: $KEY2" "$API/v1/wallets/$A" | grep -qi '^retry-after:'; then
+  ok "429 responses carry Retry-After"
+else
+  fail "429 response has no Retry-After header"
+fi
+expect "the main key is unaffected by the other key's limit" 200 \
+  "$(curl -s -o /dev/null -w '%{http_code}' -H "X-API-Key: $API_KEY" "$API/v1/wallets/$A")"
 
 post() { # idempotency key, json body -> "<body>\n<status>"
   curl -s -w '\n%{http_code}' -X POST "$API/v1/transfers" \

@@ -7,6 +7,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Values in .env.e2e must win over anything already exported in your shell (for example from
+# `source .env`): docker compose gives shell variables priority over --env-file.
+set -a
+. ./.env.e2e
+set +a
+
 DC="docker compose -p remit-load --env-file .env.e2e -f docker-compose.prod.yml -f docker-compose.e2e.yml"
 DB="postgres://remit:remit@localhost:55432/remit?sslmode=disable"
 RATE="${RATE:-100}"
@@ -31,6 +37,8 @@ for _ in $(seq 60); do psql "$DB" -c "select 1" >/dev/null 2>&1 && break; sleep 
 DATABASE_URL="$DB" bash scripts/run_migrations.sh >/dev/null
 psql "$DB" -v ON_ERROR_STOP=1 -q -f sql/seed/seed.sql
 psql "$DB" -v ON_ERROR_STOP=1 -q -f sql/seed/load.sql
+# The default limit (100 requests/minute per key) would reject the load test.
+export RATE_LIMIT_MAX=1000000
 $DC up -d --build --wait
 API_KEY=$(DATABASE_URL="$DB" bash scripts/create_api_key.sh 2>/dev/null)
 echo "stack is up; running k6 (RATE=$RATE DURATION=$DURATION)"

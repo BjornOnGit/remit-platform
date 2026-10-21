@@ -1,15 +1,17 @@
 import { randomUUID } from "node:crypto";
 import Fastify from "fastify";
+import type { Redis } from "ioredis";
 import { KeyChecker, registerApiKeyAuth } from "./auth";
 import { httpStatusFor, isGrpcError } from "./grpc/errors";
 import { register } from "./metrics";
+import { registerRateLimit } from "./rateLimit";
 import { FxError } from "./services/fxClient";
 import { fxRoutes } from "./routes/fx";
 import { transactionRoutes } from "./routes/transactions";
 import { transferRoutes } from "./routes/transfers";
 import { walletRoutes } from "./routes/wallets";
 
-export function buildApp(checkKey: KeyChecker) {
+export function buildApp(checkKey: KeyChecker, redis: Redis) {
   const app = Fastify({
     logger: true,
     requestIdHeader: "x-correlation-id", // reuse the caller's id if sent
@@ -42,6 +44,7 @@ export function buildApp(checkKey: KeyChecker) {
   });
 
   registerApiKeyAuth(app, checkKey); // must come before the routes it protects
+  registerRateLimit(app, redis); // after auth: only valid keys are counted
 
   app.get("/health", async () => ({ status: "ok" }));
   app.get("/metrics", async (_req, reply) =>
